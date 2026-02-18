@@ -11,6 +11,7 @@ import (
 
 	"github.com/Priya8975/webhook-delivery-system/internal/api"
 	"github.com/Priya8975/webhook-delivery-system/internal/config"
+	"github.com/Priya8975/webhook-delivery-system/internal/store"
 )
 
 func main() {
@@ -22,7 +23,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	router := api.NewRouter()
+	// Initialize PostgreSQL
+	ctx := context.Background()
+	pgStore, err := store.NewPostgres(ctx, cfg.DatabaseURL)
+	if err != nil {
+		logger.Error("failed to connect to postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pgStore.Close()
+	logger.Info("connected to PostgreSQL")
+
+	// Run database migrations
+	if err := pgStore.RunMigrations(ctx, "migrations"); err != nil {
+		logger.Error("failed to run migrations", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("database migrations applied")
+
+	// Setup router
+	router := api.NewRouter(pgStore)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -48,10 +67,10 @@ func main() {
 
 	logger.Info("shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server forced to shutdown", "error", err)
 		os.Exit(1)
 	}
