@@ -11,6 +11,7 @@ import (
 
 	"github.com/Priya8975/webhook-delivery-system/internal/api"
 	"github.com/Priya8975/webhook-delivery-system/internal/config"
+	"github.com/Priya8975/webhook-delivery-system/internal/engine"
 	"github.com/Priya8975/webhook-delivery-system/internal/store"
 )
 
@@ -23,8 +24,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize PostgreSQL
 	ctx := context.Background()
+
+	// Initialize PostgreSQL
 	pgStore, err := store.NewPostgres(ctx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("failed to connect to postgres", "error", err)
@@ -40,8 +42,20 @@ func main() {
 	}
 	logger.Info("database migrations applied")
 
+	// Initialize Redis
+	redisStore, err := store.NewRedis(ctx, cfg.RedisURL)
+	if err != nil {
+		logger.Error("failed to connect to redis", "error", err)
+		os.Exit(1)
+	}
+	defer redisStore.Close()
+	logger.Info("connected to Redis")
+
+	// Initialize fan-out engine
+	fanout := engine.NewFanOutEngine(pgStore, redisStore, logger)
+
 	// Setup router
-	router := api.NewRouter(pgStore)
+	router := api.NewRouter(pgStore, fanout)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

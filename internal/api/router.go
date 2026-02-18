@@ -3,13 +3,14 @@ package api
 import (
 	"net/http"
 
+	"github.com/Priya8975/webhook-delivery-system/internal/engine"
 	"github.com/Priya8975/webhook-delivery-system/internal/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
 
 // NewRouter creates and configures the HTTP router.
-func NewRouter(pgStore *store.PostgresStore) http.Handler {
+func NewRouter(pgStore *store.PostgresStore, fanout *engine.FanOutEngine) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware stack
@@ -21,6 +22,7 @@ func NewRouter(pgStore *store.PostgresStore) http.Handler {
 
 	// Handlers
 	subHandler := NewSubscriberHandler(pgStore)
+	eventHandler := NewEventHandler(pgStore, fanout)
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
@@ -31,6 +33,12 @@ func NewRouter(pgStore *store.PostgresStore) http.Handler {
 			r.Get("/", subHandler.List)
 			r.Get("/{id}", subHandler.Get)
 			r.Patch("/{id}", subHandler.Update)
+		})
+
+		r.Route("/events", func(r chi.Router) {
+			r.Post("/", eventHandler.Create)
+			r.Get("/", eventHandler.List)
+			r.Get("/{id}", eventHandler.Get)
 		})
 	})
 
