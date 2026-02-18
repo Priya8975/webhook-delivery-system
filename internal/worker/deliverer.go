@@ -259,6 +259,10 @@ func (d *Deliverer) scheduleRetry(ctx context.Context, job engine.DeliveryJob) *
 
 // moveToDLQ inserts the failed delivery into the dead letter queue.
 func (d *Deliverer) moveToDLQ(ctx context.Context, job engine.DeliveryJob, statusCode *int, errMsg string) {
+	if d.pgStore == nil {
+		return
+	}
+
 	err := d.pgStore.InsertDeadLetter(ctx, store.DeadLetterRecord{
 		EventID:        job.EventID,
 		SubscriberID:   job.SubscriberID,
@@ -277,6 +281,10 @@ func (d *Deliverer) moveToDLQ(ctx context.Context, job engine.DeliveryJob, statu
 
 // recordAttempt logs the delivery result to PostgreSQL.
 func (d *Deliverer) recordAttempt(ctx context.Context, job engine.DeliveryJob, start time.Time, statusCode *int, responseBody string, errMsg string, nextRetryAt *time.Time) {
+	if d.pgStore == nil {
+		return
+	}
+
 	elapsed := time.Since(start).Milliseconds()
 
 	status := "success"
