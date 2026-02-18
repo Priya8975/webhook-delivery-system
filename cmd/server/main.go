@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/Priya8975/webhook-delivery-system/internal/config"
 	"github.com/Priya8975/webhook-delivery-system/internal/engine"
 	"github.com/Priya8975/webhook-delivery-system/internal/store"
+	ws "github.com/Priya8975/webhook-delivery-system/internal/websocket"
 	"github.com/Priya8975/webhook-delivery-system/internal/worker"
 )
 
@@ -60,16 +62,28 @@ func main() {
 	circuitBreaker := engine.NewCircuitBreaker(redisStore.Client(), logger)
 	rateLimiter := engine.NewRateLimiter(redisStore.Client(), logger)
 
+	// Start WebSocket hub for real-time dashboard
+	hub := ws.NewHub(logger)
+	go hub.Run()
+	logger.Info("WebSocket hub started")
+
 	// Start worker pool and dispatcher
-	deliverer := worker.NewDeliverer(pgStore, redisStore.Client(), circuitBreaker, rateLimiter, logger)
+	deliverer := worker.NewDeliverer(pgStore, redisStore.Client(), circuitBreaker, rateLimiter, hub, logger)
 	pool := worker.NewPool(cfg.NumWorkers, deliverer, logger)
 	pool.Start(ctx)
 
 	dispatcher := worker.NewDispatcher(redisStore.Client(), pool, logger)
 	go dispatcher.Start(ctx)
 
+	// Load dashboard static files (if available)
+	var dashboardFS fs.FS
+	if info, err := os.Stat("dashboard/dist"); err == nil && info.IsDir() {
+		dashboardFS = os.DirFS("dashboard/dist")
+		logger.Info("serving dashboard from dashboard/dist")
+	}
+
 	// Setup router
-	router := api.NewRouter(pgStore, fanout, circuitBreaker)
+	router := api.NewRouter(pgStore, fanout, circuitBreaker, hub, dashboardFS)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

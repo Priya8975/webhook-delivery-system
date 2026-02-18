@@ -17,6 +17,7 @@ import (
 
 	"github.com/Priya8975/webhook-delivery-system/internal/engine"
 	"github.com/Priya8975/webhook-delivery-system/internal/store"
+	ws "github.com/Priya8975/webhook-delivery-system/internal/websocket"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -27,11 +28,12 @@ type Deliverer struct {
 	redisClient    *redis.Client
 	circuitBreaker *engine.CircuitBreaker
 	rateLimiter    *engine.RateLimiter
+	hub            *ws.Hub
 	logger         *slog.Logger
 }
 
 // NewDeliverer creates a deliverer with a configured HTTP client.
-func NewDeliverer(pgStore *store.PostgresStore, redisClient *redis.Client, cb *engine.CircuitBreaker, rl *engine.RateLimiter, logger *slog.Logger) *Deliverer {
+func NewDeliverer(pgStore *store.PostgresStore, redisClient *redis.Client, cb *engine.CircuitBreaker, rl *engine.RateLimiter, hub *ws.Hub, logger *slog.Logger) *Deliverer {
 	return &Deliverer{
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -40,6 +42,7 @@ func NewDeliverer(pgStore *store.PostgresStore, redisClient *redis.Client, cb *e
 		redisClient:    redisClient,
 		circuitBreaker: cb,
 		rateLimiter:    rl,
+		hub:            hub,
 		logger:         logger,
 	}
 }
@@ -104,16 +107,31 @@ func (d *Deliverer) Deliver(ctx context.Context, job engine.DeliveryJob) {
 	// Read response body (limit to 1KB to prevent memory issues)
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	responseBody := string(body)
+	elapsed := time.Since(start).Milliseconds()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		d.circuitBreaker.RecordSuccess(ctx, job.SubscriberID)
 		d.recordAttempt(ctx, job, start, &resp.StatusCode, responseBody, "", nil)
+
+		// Broadcast success to dashboard
+		d.hub.Broadcast(ws.DeliveryEvent{
+			Type:         "delivery_success",
+			EventID:      job.EventID,
+			SubscriberID: job.SubscriberID,
+			EndpointURL:  job.EndpointURL,
+			EventType:    job.EventType,
+			Attempt:      job.Attempt,
+			StatusCode:   &resp.StatusCode,
+			ResponseMs:   elapsed,
+			Timestamp:    time.Now(),
+		})
+
 		d.logger.Info("delivery successful",
 			"event_id", job.EventID,
 			"subscriber_id", job.SubscriberID,
 			"attempt", job.Attempt,
 			"status_code", resp.StatusCode,
-			"response_time_ms", time.Since(start).Milliseconds(),
+			"response_time_ms", elapsed,
 		)
 	} else {
 		d.circuitBreaker.RecordFailure(ctx, job.SubscriberID)
@@ -143,10 +161,26 @@ func (d *Deliverer) requeueWithDelay(ctx context.Context, job engine.DeliveryJob
 
 // handleFailure processes a failed delivery — either retries or sends to DLQ.
 func (d *Deliverer) handleFailure(ctx context.Context, job engine.DeliveryJob, start time.Time, statusCode *int, responseBody string, errMsg string) {
+	elapsed := time.Since(start).Milliseconds()
+
 	if job.Attempt < job.MaxRetries {
 		// Schedule retry with exponential backoff + jitter
 		nextRetry := d.scheduleRetry(ctx, job)
 		d.recordAttempt(ctx, job, start, statusCode, responseBody, errMsg, nextRetry)
+
+		// Broadcast retry to dashboard
+		d.hub.Broadcast(ws.DeliveryEvent{
+			Type:         "delivery_retrying",
+			EventID:      job.EventID,
+			SubscriberID: job.SubscriberID,
+			EndpointURL:  job.EndpointURL,
+			EventType:    job.EventType,
+			Attempt:      job.Attempt,
+			StatusCode:   statusCode,
+			ResponseMs:   elapsed,
+			Error:        errMsg,
+			Timestamp:    time.Now(),
+		})
 
 		d.logger.Warn("delivery failed, scheduling retry",
 			"event_id", job.EventID,
@@ -161,6 +195,20 @@ func (d *Deliverer) handleFailure(ctx context.Context, job engine.DeliveryJob, s
 		// Max retries exhausted — move to dead letter queue
 		d.recordAttempt(ctx, job, start, statusCode, responseBody, errMsg, nil)
 		d.moveToDLQ(ctx, job, statusCode, errMsg)
+
+		// Broadcast DLQ entry to dashboard
+		d.hub.Broadcast(ws.DeliveryEvent{
+			Type:         "delivery_dlq",
+			EventID:      job.EventID,
+			SubscriberID: job.SubscriberID,
+			EndpointURL:  job.EndpointURL,
+			EventType:    job.EventType,
+			Attempt:      job.Attempt,
+			StatusCode:   statusCode,
+			ResponseMs:   elapsed,
+			Error:        errMsg,
+			Timestamp:    time.Now(),
+		})
 
 		d.logger.Error("delivery permanently failed, moved to dead letter queue",
 			"event_id", job.EventID,
