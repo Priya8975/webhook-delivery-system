@@ -1,0 +1,51 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/server
+/worker
+
+# Test binary
+*.test
+
+# Output
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plan files (development notes)
+*plan*.md
+webhook-delivery-system-plan-go.md
+
+# Docker volumes
+postgres_data/
+
+# Dashboard
+dashboard/node_modules/
+dashboard/build/
+dashboard/.env
+
+# Load test results (raw)
+loadtests/results/*.json
+
+# Coverage
+coverage.out
+coverage.html
