@@ -13,6 +13,7 @@ import (
 	"github.com/Priya8975/webhook-delivery-system/internal/config"
 	"github.com/Priya8975/webhook-delivery-system/internal/engine"
 	"github.com/Priya8975/webhook-delivery-system/internal/store"
+	"github.com/Priya8975/webhook-delivery-system/internal/worker"
 )
 
 func main() {
@@ -24,7 +25,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Initialize PostgreSQL
 	pgStore, err := store.NewPostgres(ctx, cfg.DatabaseURL)
@@ -54,6 +56,14 @@ func main() {
 	// Initialize fan-out engine
 	fanout := engine.NewFanOutEngine(pgStore, redisStore, logger)
 
+	// Start worker pool and dispatcher
+	deliverer := worker.NewDeliverer(pgStore, logger)
+	pool := worker.NewPool(cfg.NumWorkers, deliverer, logger)
+	pool.Start(ctx)
+
+	dispatcher := worker.NewDispatcher(redisStore.Client(), pool, logger)
+	go dispatcher.Start(ctx)
+
 	// Setup router
 	router := api.NewRouter(pgStore, fanout)
 
@@ -81,8 +91,14 @@ func main() {
 
 	logger.Info("shutting down server...")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Cancel context to stop dispatcher and workers
+	cancel()
+
+	// Stop worker pool (waits for in-flight deliveries)
+	pool.Stop()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server forced to shutdown", "error", err)
