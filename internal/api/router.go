@@ -24,6 +24,7 @@ func NewRouter(pgStore *store.PostgresStore, fanout *engine.FanOutEngine) http.H
 	subHandler := NewSubscriberHandler(pgStore)
 	eventHandler := NewEventHandler(pgStore, fanout)
 	deliveryHandler := NewDeliveryHandler(pgStore)
+	dlqHandler := NewDeadLetterHandler(pgStore)
 
 	// API routes
 	r.Route("/api/v1", func(r chi.Router) {
@@ -45,6 +46,12 @@ func NewRouter(pgStore *store.PostgresStore, fanout *engine.FanOutEngine) http.H
 		r.Route("/deliveries", func(r chi.Router) {
 			r.Get("/", deliveryHandler.List)
 			r.Get("/{id}", deliveryHandler.Get)
+		})
+
+		r.Route("/dead-letters", func(r chi.Router) {
+			r.Get("/", dlqHandler.List)
+			r.Get("/{id}", dlqHandler.Get)
+			r.Post("/{id}/resolve", dlqHandler.Resolve)
 		})
 	})
 

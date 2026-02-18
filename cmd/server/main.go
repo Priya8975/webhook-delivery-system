@@ -57,7 +57,7 @@ func main() {
 	fanout := engine.NewFanOutEngine(pgStore, redisStore, logger)
 
 	// Start worker pool and dispatcher
-	deliverer := worker.NewDeliverer(pgStore, logger)
+	deliverer := worker.NewDeliverer(pgStore, redisStore.Client(), logger)
 	pool := worker.NewPool(cfg.NumWorkers, deliverer, logger)
 	pool.Start(ctx)
 
