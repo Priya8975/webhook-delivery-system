@@ -56,8 +56,12 @@ func main() {
 	// Initialize fan-out engine
 	fanout := engine.NewFanOutEngine(pgStore, redisStore, logger)
 
+	// Initialize circuit breaker and rate limiter
+	circuitBreaker := engine.NewCircuitBreaker(redisStore.Client(), logger)
+	rateLimiter := engine.NewRateLimiter(redisStore.Client(), logger)
+
 	// Start worker pool and dispatcher
-	deliverer := worker.NewDeliverer(pgStore, redisStore.Client(), logger)
+	deliverer := worker.NewDeliverer(pgStore, redisStore.Client(), circuitBreaker, rateLimiter, logger)
 	pool := worker.NewPool(cfg.NumWorkers, deliverer, logger)
 	pool.Start(ctx)
 
@@ -65,7 +69,7 @@ func main() {
 	go dispatcher.Start(ctx)
 
 	// Setup router
-	router := api.NewRouter(pgStore, fanout)
+	router := api.NewRouter(pgStore, fanout, circuitBreaker)
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

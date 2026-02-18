@@ -10,7 +10,7 @@ import (
 )
 
 // NewRouter creates and configures the HTTP router.
-func NewRouter(pgStore *store.PostgresStore, fanout *engine.FanOutEngine) http.Handler {
+func NewRouter(pgStore *store.PostgresStore, fanout *engine.FanOutEngine, cb *engine.CircuitBreaker) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware stack
@@ -21,7 +21,7 @@ func NewRouter(pgStore *store.PostgresStore, fanout *engine.FanOutEngine) http.H
 	r.Use(middleware.Heartbeat("/ping"))
 
 	// Handlers
-	subHandler := NewSubscriberHandler(pgStore)
+	subHandler := NewSubscriberHandler(pgStore, cb)
 	eventHandler := NewEventHandler(pgStore, fanout)
 	deliveryHandler := NewDeliveryHandler(pgStore)
 	dlqHandler := NewDeadLetterHandler(pgStore)
@@ -35,6 +35,7 @@ func NewRouter(pgStore *store.PostgresStore, fanout *engine.FanOutEngine) http.H
 			r.Get("/", subHandler.List)
 			r.Get("/{id}", subHandler.Get)
 			r.Patch("/{id}", subHandler.Update)
+			r.Get("/{id}/health", subHandler.Health)
 		})
 
 		r.Route("/events", func(r chi.Router) {

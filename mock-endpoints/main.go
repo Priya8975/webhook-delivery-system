@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"sync/atomic"
@@ -49,6 +50,22 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
 	})
 
+	// Flaky endpoint — fails 70% of the time (good for circuit breaker testing)
+	http.HandleFunc("/webhook/flaky", func(w http.ResponseWriter, r *http.Request) {
+		count := requestCount.Add(1)
+
+		w.Header().Set("Content-Type", "application/json")
+		if rand.IntN(100) < 70 {
+			logRequest(r, count, 500)
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "random failure"})
+		} else {
+			logRequest(r, count, 200)
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"status": "received (flaky)"})
+		}
+	})
+
 	// Stats endpoint — shows request count
 	http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -59,6 +76,7 @@ func main() {
 	log.Printf("  POST /webhook/success  -> 200 OK")
 	log.Printf("  POST /webhook/slow     -> 200 OK (3s delay)")
 	log.Printf("  POST /webhook/fail     -> 500 Error")
+	log.Printf("  POST /webhook/flaky    -> 70%% fail, 30%% success")
 	log.Printf("  GET  /stats            -> request count")
 
 	if err := http.ListenAndServe(":"+port, nil); err != nil {

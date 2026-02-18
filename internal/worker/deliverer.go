@@ -22,27 +22,57 @@ import (
 
 // Deliverer handles the HTTP delivery of webhook payloads to subscriber endpoints.
 type Deliverer struct {
-	httpClient  *http.Client
-	pgStore     *store.PostgresStore
-	redisClient *redis.Client
-	logger      *slog.Logger
+	httpClient     *http.Client
+	pgStore        *store.PostgresStore
+	redisClient    *redis.Client
+	circuitBreaker *engine.CircuitBreaker
+	rateLimiter    *engine.RateLimiter
+	logger         *slog.Logger
 }
 
 // NewDeliverer creates a deliverer with a configured HTTP client.
-func NewDeliverer(pgStore *store.PostgresStore, redisClient *redis.Client, logger *slog.Logger) *Deliverer {
+func NewDeliverer(pgStore *store.PostgresStore, redisClient *redis.Client, cb *engine.CircuitBreaker, rl *engine.RateLimiter, logger *slog.Logger) *Deliverer {
 	return &Deliverer{
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		pgStore:     pgStore,
-		redisClient: redisClient,
-		logger:      logger,
+		pgStore:        pgStore,
+		redisClient:    redisClient,
+		circuitBreaker: cb,
+		rateLimiter:    rl,
+		logger:         logger,
 	}
 }
 
 // Deliver sends the webhook payload to the subscriber endpoint via HTTP POST.
+// Checks circuit breaker and rate limiter before attempting delivery.
 // On failure, it either re-queues with exponential backoff or moves to the dead letter queue.
 func (d *Deliverer) Deliver(ctx context.Context, job engine.DeliveryJob) {
+	// Check circuit breaker
+	state, allowed := d.circuitBreaker.AllowRequest(ctx, job.SubscriberID)
+	if !allowed {
+		// Circuit is open — re-queue with a short delay instead of delivering
+		d.logger.Warn("circuit breaker open, re-queuing",
+			"subscriber_id", job.SubscriberID,
+			"event_id", job.EventID,
+			"state", state,
+		)
+		d.requeueWithDelay(ctx, job, 5*time.Second)
+		return
+	}
+
+	// Check rate limiter
+	if !d.rateLimiter.Allow(ctx, job.SubscriberID, job.RateLimitPerSecond) {
+		// Rate limited — re-queue with a short delay
+		d.logger.Debug("rate limited, re-queuing",
+			"subscriber_id", job.SubscriberID,
+			"event_id", job.EventID,
+			"rate_limit", job.RateLimitPerSecond,
+		)
+		d.requeueWithDelay(ctx, job, 1*time.Second)
+		return
+	}
+
 	start := time.Now()
 
 	// Compute HMAC-SHA256 signature
@@ -51,6 +81,7 @@ func (d *Deliverer) Deliver(ctx context.Context, job engine.DeliveryJob) {
 	// Build HTTP request
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, job.EndpointURL, bytes.NewReader(job.Payload))
 	if err != nil {
+		d.circuitBreaker.RecordFailure(ctx, job.SubscriberID)
 		d.handleFailure(ctx, job, start, nil, "", fmt.Sprintf("failed to create request: %v", err))
 		return
 	}
@@ -64,6 +95,7 @@ func (d *Deliverer) Deliver(ctx context.Context, job engine.DeliveryJob) {
 	// Execute the request
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
+		d.circuitBreaker.RecordFailure(ctx, job.SubscriberID)
 		d.handleFailure(ctx, job, start, nil, "", fmt.Sprintf("request failed: %v", err))
 		return
 	}
@@ -74,6 +106,7 @@ func (d *Deliverer) Deliver(ctx context.Context, job engine.DeliveryJob) {
 	responseBody := string(body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		d.circuitBreaker.RecordSuccess(ctx, job.SubscriberID)
 		d.recordAttempt(ctx, job, start, &resp.StatusCode, responseBody, "", nil)
 		d.logger.Info("delivery successful",
 			"event_id", job.EventID,
@@ -83,7 +116,28 @@ func (d *Deliverer) Deliver(ctx context.Context, job engine.DeliveryJob) {
 			"response_time_ms", time.Since(start).Milliseconds(),
 		)
 	} else {
+		d.circuitBreaker.RecordFailure(ctx, job.SubscriberID)
 		d.handleFailure(ctx, job, start, &resp.StatusCode, responseBody, "")
+	}
+}
+
+// requeueWithDelay puts the job back in the Redis queue with a short delay.
+// Used for circuit breaker and rate limiter deferrals (does NOT increment attempt count).
+func (d *Deliverer) requeueWithDelay(ctx context.Context, job engine.DeliveryJob, delay time.Duration) {
+	nextTime := time.Now().Add(delay)
+
+	jobBytes, err := json.Marshal(job)
+	if err != nil {
+		d.logger.Error("failed to marshal requeue job", "error", err)
+		return
+	}
+
+	err = d.redisClient.ZAdd(ctx, engine.DeliveryQueueKey, redis.Z{
+		Score:  float64(nextTime.UnixMicro()),
+		Member: string(jobBytes),
+	}).Err()
+	if err != nil {
+		d.logger.Error("failed to requeue job", "error", err)
 	}
 }
 
@@ -119,8 +173,6 @@ func (d *Deliverer) handleFailure(ctx context.Context, job engine.DeliveryJob, s
 }
 
 // scheduleRetry re-queues the job to Redis with a future timestamp.
-// Uses exponential backoff: 2^(attempt-1) seconds + random jitter.
-// Attempt 1 fail → retry in ~2s, attempt 2 → ~4s, attempt 3 → ~8s, attempt 4 → ~16s
 func (d *Deliverer) scheduleRetry(ctx context.Context, job engine.DeliveryJob) *time.Time {
 	baseDelay := time.Duration(math.Pow(2, float64(job.Attempt))) * time.Second
 	jitter := time.Duration(rand.IntN(1000)) * time.Millisecond
@@ -129,14 +181,15 @@ func (d *Deliverer) scheduleRetry(ctx context.Context, job engine.DeliveryJob) *
 	nextRetry := time.Now().Add(delay)
 
 	retryJob := engine.DeliveryJob{
-		EventID:      job.EventID,
-		SubscriberID: job.SubscriberID,
-		EndpointURL:  job.EndpointURL,
-		Payload:      job.Payload,
-		SecretKey:    job.SecretKey,
-		EventType:    job.EventType,
-		Attempt:      job.Attempt + 1,
-		MaxRetries:   job.MaxRetries,
+		EventID:            job.EventID,
+		SubscriberID:       job.SubscriberID,
+		EndpointURL:        job.EndpointURL,
+		Payload:            job.Payload,
+		SecretKey:          job.SecretKey,
+		EventType:          job.EventType,
+		Attempt:            job.Attempt + 1,
+		MaxRetries:         job.MaxRetries,
+		RateLimitPerSecond: job.RateLimitPerSecond,
 	}
 
 	jobBytes, err := json.Marshal(retryJob)

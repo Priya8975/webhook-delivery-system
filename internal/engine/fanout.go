@@ -16,14 +16,15 @@ const DeliveryQueueKey = "delivery_queue"
 
 // DeliveryJob represents a single webhook delivery task queued in Redis.
 type DeliveryJob struct {
-	EventID      string          `json:"event_id"`
-	SubscriberID string          `json:"subscriber_id"`
-	EndpointURL  string          `json:"endpoint_url"`
-	Payload      json.RawMessage `json:"payload"`
-	SecretKey    string          `json:"secret_key"`
-	EventType    string          `json:"event_type"`
-	Attempt      int             `json:"attempt"`
-	MaxRetries   int             `json:"max_retries"`
+	EventID            string          `json:"event_id"`
+	SubscriberID       string          `json:"subscriber_id"`
+	EndpointURL        string          `json:"endpoint_url"`
+	Payload            json.RawMessage `json:"payload"`
+	SecretKey          string          `json:"secret_key"`
+	EventType          string          `json:"event_type"`
+	Attempt            int             `json:"attempt"`
+	MaxRetries         int             `json:"max_retries"`
+	RateLimitPerSecond int             `json:"rate_limit_per_second"`
 }
 
 // FanOutEngine distributes events to matching subscribers via Redis queue.
@@ -59,14 +60,15 @@ func (f *FanOutEngine) FanOut(ctx context.Context, event *domain.Event) (int, er
 
 	for _, sub := range subscribers {
 		job := DeliveryJob{
-			EventID:      event.ID,
-			SubscriberID: sub.ID,
-			EndpointURL:  sub.EndpointURL,
-			Payload:      event.Payload,
-			SecretKey:    sub.SecretKey,
-			EventType:    event.EventType,
-			Attempt:      1,
-			MaxRetries:   5,
+			EventID:            event.ID,
+			SubscriberID:       sub.ID,
+			EndpointURL:        sub.EndpointURL,
+			Payload:            event.Payload,
+			SecretKey:          sub.SecretKey,
+			EventType:          event.EventType,
+			Attempt:            1,
+			MaxRetries:         5,
+			RateLimitPerSecond: sub.RateLimitPerSecond,
 		}
 
 		jobBytes, err := json.Marshal(job)
