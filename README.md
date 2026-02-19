@@ -2,9 +2,9 @@
 
 A fault-tolerant webhook delivery platform built in Go that reliably delivers event notifications to subscriber endpoints. Implements industry-standard reliability patterns — the same infrastructure behind Stripe, GitHub, and Shopify's webhook systems.
 
-<!-- Add a screenshot or GIF of the dashboard here:
-![Dashboard Demo](docs/demo.gif)
--->
+![Dashboard — Metrics and Live Delivery Feed](docs/dashboard.png)
+
+![Subscriber Health with Circuit Breaker States](docs/subscriber-health.png)
 
 ## Features
 
