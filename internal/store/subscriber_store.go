@@ -192,7 +192,7 @@ func generateSecretKey() (string, error) {
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
-	return "whsec_" + hex.EncodeToString(bytes), nil
+	return "whdlv_" + hex.EncodeToString(bytes), nil
 }
 
 func joinStrings(strs []string, sep string) string {
