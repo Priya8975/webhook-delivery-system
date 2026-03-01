@@ -21,46 +21,46 @@ A fault-tolerant webhook delivery platform built in Go that reliably delivers ev
 ## Architecture
 
 ```
-              ┌─────────────────────────────────────────────┐
-              │        Dashboard (React + Tailwind)          │
-              │                                              │
-              │   Metrics  │  Live Feed  │  Health  │  DLQ   │
-              └──────────────────┬──────────────────────────┘
-                                 │ WebSocket + HTTP
-┌────────────────────────────────▼──────────────────────────────┐
-│                    API Server (Go + Chi)                       │
-│                                                               │
-│  POST /events → Fan-out Engine → Find matching subscribers    │
-│                                → Queue delivery jobs in Redis │
-└──────┬────────────────────────────────────┬───────────────────┘
-       │                                    │
-┌──────▼─────────────┐          ┌───────────▼───────────────┐
-│    PostgreSQL      │          │          Redis             │
-│                    │          │                            │
-│  Subscribers       │          │  Delivery Queue            │
-│  Events            │          │  (sorted set)              │
-│  Delivery Logs     │          │                            │
-│  Dead Letters      │          │  Circuit Breaker           │
-│                    │          │  (per-subscriber)          │
-└────────────────────┘          │                            │
-                                │  Rate Limiter              │
-                                │  (sliding window)          │
-                                └─────────────┬─────────────┘
-                                              │
-                    ┌─────────────────────────▼──────────────────────────┐
-                    │            Worker Pool (Goroutines)                │
-                    │                                                    │
-                    │  Dispatcher polls Redis every 100ms                │
-                    │       ↓                                            │
-                    │  Buffered Go channel (job queue)                   │
-                    │       ↓                                            │
-                    │  N worker goroutines                               │
-                    │       ↓                                            │
-                    │  HTTP POST with HMAC signature                     │
-                    │       ↓                                            │
-                    │  Success → record + broadcast to WS                │
-                    │  Failure → retry with backoff or → DLQ             │
-                    └────────────────────────────────────────────────────┘
+            +--------------------------------------------+
+            |      Dashboard (React + Tailwind)          |
+            |                                            |
+            |  Metrics | Live Feed | Health | DLQ        |
+            +---------------------+----------------------+
+                                  |
+                                  | WebSocket + HTTP
+                                  v
++-----------------------------------------------------------+
+|                  API Server (Go + Chi)                     |
+|                                                           |
+|  POST /events -> Fan-out Engine                           |
+|    -> Find matching subscribers                           |
+|    -> Queue delivery jobs in Redis                        |
++----------+----------------------------------------+-------+
+           |                                        |
+   +-------v-----------+              +-------------v-------+
+   |   PostgreSQL      |              |       Redis         |
+   |                   |              |                     |
+   |  Subscribers      |              |  Delivery Queue     |
+   |  Events           |              |  (sorted set)       |
+   |  Delivery Logs    |              |                     |
+   |  Dead Letters     |              |  Circuit Breaker    |
+   |                   |              |  (per-subscriber)   |
+   +-------------------+              |                     |
+                                      |  Rate Limiter       |
+                                      |  (sliding window)   |
+                                      +----------+----------+
+                                                 |
+          +--------------------------------------v----------+
+          |          Worker Pool (Goroutines)                |
+          |                                                 |
+          |  Dispatcher polls Redis every 100ms             |
+          |    -> Buffered Go channel (job queue)           |
+          |    -> N worker goroutines                       |
+          |    -> HTTP POST with HMAC signature             |
+          |                                                 |
+          |  Success -> record + broadcast to dashboard     |
+          |  Failure -> retry with backoff or -> DLQ        |
+          +-------------------------------------------------+
 ```
 
 ## Tech Stack
