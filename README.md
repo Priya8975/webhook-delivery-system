@@ -20,47 +20,19 @@ A fault-tolerant webhook delivery platform built in Go that reliably delivers ev
 
 ## Architecture
 
-```
-            +--------------------------------------------+
-            |      Dashboard (React + Tailwind)          |
-            |                                            |
-            |  Metrics | Live Feed | Health | DLQ        |
-            +---------------------+----------------------+
-                                  |
-                                  | WebSocket + HTTP
-                                  v
-+-----------------------------------------------------------+
-|                  API Server (Go + Chi)                     |
-|                                                           |
-|  POST /events -> Fan-out Engine                           |
-|    -> Find matching subscribers                           |
-|    -> Queue delivery jobs in Redis                        |
-+----------+----------------------------------------+-------+
-           |                                        |
-   +-------v-----------+              +-------------v-------+
-   |   PostgreSQL      |              |       Redis         |
-   |                   |              |                     |
-   |  Subscribers      |              |  Delivery Queue     |
-   |  Events           |              |  (sorted set)       |
-   |  Delivery Logs    |              |                     |
-   |  Dead Letters     |              |  Circuit Breaker    |
-   |                   |              |  (per-subscriber)   |
-   +-------------------+              |                     |
-                                      |  Rate Limiter       |
-                                      |  (sliding window)   |
-                                      +----------+----------+
-                                                 |
-          +--------------------------------------v----------+
-          |          Worker Pool (Goroutines)                |
-          |                                                 |
-          |  Dispatcher polls Redis every 100ms             |
-          |    -> Buffered Go channel (job queue)           |
-          |    -> N worker goroutines                       |
-          |    -> HTTP POST with HMAC signature             |
-          |                                                 |
-          |  Success -> record + broadcast to dashboard     |
-          |  Failure -> retry with backoff or -> DLQ        |
-          +-------------------------------------------------+
+```mermaid
+graph TD
+    DASH["<b>Dashboard</b><br/>React + Tailwind<br/>Metrics | Live Feed | Health | DLQ"]
+    API["<b>API Server</b><br/>Go + Chi Router"]
+    PG["<b>PostgreSQL</b><br/>Subscribers, Events<br/>Delivery Logs, Dead Letters"]
+    REDIS["<b>Redis</b><br/>Delivery Queue (sorted set)<br/>Circuit Breaker (per-subscriber)<br/>Rate Limiter (sliding window)"]
+    POOL["<b>Worker Pool</b><br/>N Goroutines + Dispatcher<br/>HTTP POST with HMAC Signature<br/>Success → Record + Broadcast<br/>Failure → Retry with Backoff or DLQ"]
+
+    DASH -- "WebSocket + HTTP" --> API
+    API -- "Store events & logs" --> PG
+    API -- "Queue delivery jobs" --> REDIS
+    REDIS -- "Poll every 100ms" --> POOL
+    POOL -- "Broadcast events" --> DASH
 ```
 
 ## Tech Stack
